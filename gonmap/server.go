@@ -3,9 +3,9 @@ package main
 import (
 	"fmt"
 	"net"
+	"strconv"
 )
 
-// требуется только ниже для обработки примера
 func sendResponse(conn *net.UDPConn, addr *net.UDPAddr) {
 	_, err := conn.WriteToUDP([]byte("From server: Hello I got your message "), addr)
 	if err != nil {
@@ -13,10 +13,21 @@ func sendResponse(conn *net.UDPConn, addr *net.UDPAddr) {
 	}
 }
 
-func run() {
+func main() {
+
+	var (
+		UDP_CONN_PORT = "100"
+	)
+
 	p := make([]byte, 2048)
+
+	port, err := strconv.Atoi(UDP_CONN_PORT)
+	if err != nil {
+		fmt.Print("Incorrect port")
+	}
+
 	addr := net.UDPAddr{
-		Port: 1234,
+		Port: port,
 		IP:   net.ParseIP("127.0.0.1"),
 	}
 	ser, err := net.ListenUDP("udp", &addr)

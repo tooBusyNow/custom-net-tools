@@ -5,47 +5,100 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/mpvl/unique"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 )
 
+var (
+	reset = "\033[0m"
+	green = "\033[32m"
+	red   = "\033[31m"
+)
+
+var top20 = "21-23,25,53,80,110-111,135,139,143,443,445,993,995,1723,3306,3389,5900,8080"
+
+func portParseError() {
+	fmt.Println("Can't parse port number")
+	os.Exit(0)
+}
+
+func count_port_tabs(port int) string {
+	if len(strconv.Itoa(port)) > 3 {
+		return "\t"
+	}
+	return "\t\t"
+}
+
+func print_opened(port int, proto string) {
+	out := fmt.Sprintf("|\t%d/%s ⟸\t| %s\t |\n", port, proto, "Opened ✔")
+	fmt.Print(string(green), out, string(reset))
+}
+
+func print_closed(port int, proto string) {
+
+	tabs := count_port_tabs(port)
+
+	out := fmt.Sprintf("|\t%d/%s%s| %s\t |\n", port, proto, tabs, "Closed ✖")
+	fmt.Print(string(red), out, string(reset))
+}
+
 func ports_parse(portRange string) []string {
 
-	reg := regexp.MustCompile(`[-,]`)
-	scanRange := reg.Split(portRange, -1)
+	rawRange := strings.Split(portRange, ",")
+	var scanPorts []string
 
-	if len(scanRange) == 0 || len(scanRange) > 2 {
-		fmt.Println("Scan range should be either single number, or two numbers separated with \"-\"")
-		os.Exit(0)
-	}
+	for _, raw_port := range rawRange {
+		if strings.Contains(raw_port, "-") {
+			splitted := strings.Split(raw_port, "-")
 
-	for _, raw_port := range scanRange {
-		if _, err := strconv.Atoi(raw_port); err != nil {
-			fmt.Println("Can't parse port numbers")
-			os.Exit(0)
+			s_port, err1 := strconv.Atoi(splitted[0])
+			f_port, err2 := strconv.Atoi(splitted[1])
+
+			if err1 != nil || err2 != nil || f_port < s_port {
+				portParseError()
+			}
+
+			for i := s_port; i <= f_port; i++ {
+				scanPorts = append(scanPorts, strconv.Itoa(i))
+			}
+
+		} else {
+			if _, err := strconv.Atoi(raw_port); err != nil {
+				portParseError()
+			} else {
+				scanPorts = append(scanPorts, raw_port)
+			}
 		}
 	}
-	return scanRange
+
+	sort.StringSlice(scanPorts).Sort()
+	unique.Strings(&scanPorts)
+
+	return scanPorts
 }
 
 func init_parse() (ports []string, ip net.IP, mTh bool) {
 
 	var portRange string
-	flag.StringVar(&portRange, "p", "80", "specifies port range to scan")
+	flag.StringVar(&portRange, "p", top20, "specifies port range to scan")
 
 	var mThread bool
-	flag.BoolVar(&mThread, "t", false, "allows to run with goroutines (parallel)")
-	flag.Parse()
+	flag.BoolVar(&mThread, "mth", false, "allows to run with goroutines (in parallel)")
 
+	flag.Parse()
 	if ip := net.ParseIP(flag.Arg(0)); ip != nil {
+
 		scanPorts := ports_parse(portRange)
 		return scanPorts, ip, mThread
+
 	} else {
 		fmt.Println("IP address is not provided or invalid")
 		os.Exit(0)
@@ -53,7 +106,7 @@ func init_parse() (ports []string, ip net.IP, mTh bool) {
 	return
 }
 
-func check_avail(ip net.IP) {
+func check_availability(ip net.IP) {
 
 	fmt.Print("Trying to reach host... ")
 
@@ -82,7 +135,7 @@ func check_avail(ip net.IP) {
 	}
 
 	/// Wait for ICMP reply from target
-	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 	readBuff := make([]byte, 1500)
 	n, _, err := conn.ReadFrom(readBuff)
 
@@ -108,15 +161,22 @@ func check_avail(ip net.IP) {
 
 func scan_tcp_port(socket string, port int, mu *sync.Mutex, op *[]string, mThread bool) {
 
+	/// Trying to establish TCP connection
 	conn, tcpErr := net.DialTimeout("tcp", socket, time.Second)
 
+	/// If there is no connection err, then TCP port is opened
 	if tcpErr == nil {
 		defer conn.Close()
-		fmt.Printf("|%d/tcp ⟸\t\t| %s	 |\n", port, "Opened ✔")
+		print_opened(port, "tcp")
+
+		/// Add to the list of opened ports using mutex
 		mu.Lock()
+		*op = append(*op, strconv.Itoa(port)+" (TCP)")
+		mu.Unlock()
 
 	} else {
-		fmt.Printf("|%d/tcp\t\t| %s	 |\n", port, "Closed ✖")
+		print_closed(port, "tcp")
+		return
 	}
 }
 
@@ -135,33 +195,43 @@ func scan_udp_port(socket string, port int, mu *sync.Mutex, op *[]string, mThrea
 		return
 	}
 
+	/// To check if the UDP port is open or not, we should receive a response from the port.
 	_, err = conn.WriteTo([]byte("some message"), dst)
 	if err != nil {
 		return
 	}
 
+	/// Set deadline for reply in 0.5 sec
 	conn.SetReadDeadline(time.Now().Add(time.Second / 2))
 	readBuff := make([]byte, 1500)
 
 	n, _, err := conn.ReadFrom(readBuff)
+
+	/// If we get an error, then this UDP port is closed
 	if err != nil {
-		fmt.Printf("|%d/udp\t\t| %s	 |\n", port, "Closed ✖")
+		print_closed(port, "udp")
 		return
+
 	} else {
 		_, err := icmp.ParseMessage(1, readBuff[:n])
 		if err != nil {
 			return
 		}
-		fmt.Printf("|%d/udp ⟸\t\t| %s	 |\n", port, "Opened ✔")
+
+		print_opened(port, "udp")
+
+		mu.Lock()
+		*op = append(*op, strconv.Itoa(port)+" (UDP)")
+		mu.Unlock()
 	}
 }
 
-func start_worker(portsChan chan int, wg *sync.WaitGroup,
+func start_worker(portChan chan int, wg *sync.WaitGroup,
 	mu *sync.Mutex, op *[]string, ip string) {
 
 	defer wg.Done()
 
-	for port := range portsChan {
+	for port := range portChan {
 		socket := fmt.Sprintf("%s:%d", ip, port)
 		scan_tcp_port(socket, port, mu, op, true)
 		scan_udp_port(socket, port, mu, op, true)
@@ -171,62 +241,62 @@ func start_worker(portsChan chan int, wg *sync.WaitGroup,
 func start_scan(ip net.IP, ports []string, mThread bool,
 	wg *sync.WaitGroup, mu *sync.Mutex, op *[]string, portsChan chan int) {
 
-	startPort, _ := strconv.Atoi(ports[0])
-	finishPort, _ := strconv.Atoi(ports[0])
+	for _, port := range ports {
 
-	if len(ports) > 1 {
-		finishPort, _ = strconv.Atoi(ports[1])
-	}
+		intPort, _ := strconv.Atoi(port)
+		socket := fmt.Sprintf("%s:%d", ip, intPort)
 
-	fmt.Println("Starting port scan:")
-	fmt.Println("+-----------------------+----------------+\r\n|       Socket   	|",
-		"    State   	 |\n+-----------------------+----------------+")
-
-	for port := startPort; port <= finishPort; port++ {
-		socket := fmt.Sprintf("%s:%d", ip, port)
-
+		/// If we use a multithreading mode, we should send ports into channel for goroutines
 		if mThread {
-			portsChan <- port
+			portsChan <- intPort
 		} else {
-			scan_tcp_port(socket, port, mu, op, false)
-			scan_udp_port(socket, port, mu, op, false)
+			scan_tcp_port(socket, intPort, mu, op, false)
+			scan_udp_port(socket, intPort, mu, op, false)
 		}
 	}
 }
 
 func main() {
 
-	start_time := time.Now()
-	fmt.Printf("Starting Gomap Tool at: %s\n", start_time.String())
+	fmt.Printf("Starting Gomap Tool at: %s\n", time.Now())
 
 	ports, ip, mThread := init_parse()
-
-	check_avail(ip)
+	check_availability(ip)
 
 	var openedPorts []string
 	op := &openedPorts
 
+	/// Start a pool of workers (goroutines) with port channel
 	mu := &sync.Mutex{}
 	wg := &sync.WaitGroup{}
-	portsChan := make(chan int)
+	portChan := make(chan int)
 
-	/// Actual number of goroutines will be NumCPU x 2.
-	/// StartWorker runs in a separate goroutine just
-	/// to start UPD and TCP goroutines
-
-	goroutines := runtime.NumCPU()
 	if mThread {
+		goroutines := runtime.NumCPU()
 		for i := 0; i < goroutines; i++ {
 			wg.Add(1)
-			go start_worker(portsChan, wg, mu, op, ip.String())
+			go start_worker(portChan, wg, mu, op, ip.String())
 		}
 	}
 
-	start_scan(ip, ports, mThread, wg, mu, op, portsChan)
-	close(portsChan)
+	fmt.Println("Starting port scan:")
+	fmt.Print("+-----------------------+----------------+\r\n", "|       Socket   	|",
+		"     State   	 |\r\n", "+-----------------------+----------------+\r\n")
 
+	start_time := time.Now()
+	start_scan(ip, ports, mThread, wg, mu, op, portChan)
+
+	close(portChan)
+
+	/// Wait for all goroutines to finish
 	wg.Wait()
 
 	fmt.Println("+-----------------------+----------------+")
-	fmt.Printf("Port scanning was finished in %s", time.Since(start_time).String())
+	fmt.Printf("Port scanning was finished in %s\n", time.Since(start_time))
+
+	if len(openedPorts) > 0 {
+		fmt.Println("List of opened ports: ", strings.Join(openedPorts, ", "))
+	} else {
+		fmt.Printf("There are no open TCP/UDP ports on target: %s", ip.String())
+	}
 }
