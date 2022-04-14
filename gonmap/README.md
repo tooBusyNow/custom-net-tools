@@ -48,7 +48,9 @@ $./gomap.exe -p 20-50,15,5156-5170,22,8080 -mth 127.0.0.1
 This will start gonmap in a multithreaded mode (`-mth` option) with ports (`-p` option): 15, 22, 20-50, 15, 5156-5170, 8080.
 
 
-<span style="color:red">**Do NOT use -p option in this way**:</span>
+- ![#f03c15](https://via.placeholder.com/15/f03c15/000000?text=+) `Do NOT use -p option in this way:` ![#f03c15](https://via.placeholder.com/15/f03c15/000000?text=+)
+
+
 ```sh
 $./gomap.exe -p 20-50, 15, 5156-5170, 22, 8080 -mth 127.0.0.1
 ```
@@ -59,4 +61,4 @@ The current version of my program relies on `go flag package`, that can parse co
 
 Might be helpful:
 
-![Alt Text](/custom-net-tools/gonmap/utils/demo.gif)
+![Alt Text](utils/demo.gif)
