@@ -45,7 +45,7 @@ However, this is not the best way to use GOnmap. Because you don't run it in a m
 $./gomap.exe -p 20-50,15,5156-5170,22,8080 -mth 127.0.0.1
 ```
 
-This will start gonmap in a multithreaded mode (`-mth` option) with ports (`-p` option): 15, 22, 20-50, 15, 5156-5170, 8080.
+This will start gonmap in a multithreaded mode (`-mth` option) with ports (`-p` option): 20-50, 15, 5156-5170, 22, 8080.
 
 
 - ![#f03c15](https://via.placeholder.com/15/f03c15/000000?text=+) `Do NOT use -p option in this way:` ![#f03c15](https://via.placeholder.com/15/f03c15/000000?text=+)
