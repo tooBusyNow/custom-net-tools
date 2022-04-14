@@ -52,7 +52,7 @@ This will start gonmap in a multithreaded mode (`-mth` option) with ports (`-p` 
 ```sh
 $./gomap.exe -p 20-50, 15, 5156-5170, 22, 8080 -mth 127.0.0.1
 ```
-The current version of my program relies on `go flag package`, and it's can parse command line arguments as a sequense after option. So please, don't separate ports from each other. 
+The current version of my program relies on `go flag package`, that can parse command line arguments as a sequense after option. So please, don't separate ports from each other. 
 
 
 ## Visualization
