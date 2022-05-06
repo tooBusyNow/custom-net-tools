@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -15,33 +16,53 @@ type ConfigInstance struct {
 	UpdateLivetime bool     `yaml:"update-in-livetime"`
 }
 
-func (conf *ConfigInstance) parse(data []byte) error {
+func (conf *ConfigInstance) parseConfig(data []byte) error {
 	return yaml.Unmarshal(data, conf)
 }
 
-func UseConfig(configPath *string) *ConfigInstance {
+func LoadDNSConfig(configPath *string, updateChan chan bool,
+	doneChan chan bool, ctx context.Context) *ConfigInstance {
+
+	var configInst *ConfigInstance = &ConfigInstance{}
+
+	if configInst, err := getValidatedConfig(configPath, configInst); err == nil {
+		if configInst.UpdateLivetime {
+			go CreateWatcher(configPath, configInst, updateChan, doneChan, ctx)
+		}
+		return configInst
+	} else {
+		os.Exit(0)
+	}
+	return nil
+}
+
+func ReloadDNSConfig(configPath *string, configInst *ConfigInstance) (*ConfigInstance, error) {
+	var err error
+	configInst, err = getValidatedConfig(configPath, configInst)
+	if err != nil {
+		return nil, err
+	}
+	return configInst, nil
+}
+
+func getValidatedConfig(configPath *string, configInst *ConfigInstance) (*ConfigInstance, error) {
 
 	if _, err := os.Stat(*configPath); err != nil {
 		fmt.Print("\033[31mCan't find config file!\033[0m")
-		os.Exit(0)
+		return nil, err
 	}
 
 	data, err := ioutil.ReadFile(*configPath)
-	var configInst *ConfigInstance = &ConfigInstance{}
 
 	if err != nil {
 		fmt.Print("\033[31mConfig file is not a correct YAML file!\033[0m")
-		os.Exit(0)
+		return nil, err
 	}
 
-	if err := configInst.parse(data); err != nil {
+	if err := configInst.parseConfig(data); err != nil {
 		fmt.Print("\033[31mError occured during parsing YAML config\033[0m")
-		os.Exit(0)
+		return nil, err
 	}
 
-	if configInst.UpdateLivetime {
-		go CreateWatcher(configPath, configInst)
-	}
-
-	return configInst
+	return configInst, nil
 }
