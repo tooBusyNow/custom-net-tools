@@ -3,8 +3,8 @@ package config
 import (
 	"context"
 	"fmt"
-	"io/ioutil"
 	"os"
+	"sync"
 
 	"gopkg.in/yaml.v2"
 )
@@ -16,53 +16,68 @@ type ConfigInstance struct {
 	UpdateLivetime bool     `yaml:"update-in-livetime"`
 }
 
-func (conf *ConfigInstance) parseConfig(data []byte) error {
-	return yaml.Unmarshal(data, conf)
+type ConfigHandler struct {
+	configPath string
+	configInst *ConfigInstance
+	mu         sync.RWMutex
 }
 
-func LoadDNSConfig(configPath *string, updateChan chan bool,
-	doneChan chan bool, ctx context.Context) *ConfigInstance {
-
-	var configInst *ConfigInstance = &ConfigInstance{}
-
-	if configInst, err := getValidatedConfig(configPath, configInst); err == nil {
-		if configInst.UpdateLivetime {
-			go CreateWatcher(configPath, configInst, updateChan, doneChan, ctx)
-		}
-		return configInst
-	} else {
+func NewConfigHandler(path string, ctx context.Context) *ConfigHandler {
+	handler := &ConfigHandler{configPath: path}
+	err := handler.Load(ctx)
+	if err != nil {
+		fmt.Print("\033[31mCan't create config loader due to internal error\033[0m")
 		os.Exit(0)
+	}
+	return handler
+}
+
+func (handler *ConfigHandler) Load(ctx context.Context) error {
+	config, err := loadConfigFile(handler, ctx)
+	if err != nil {
+		return err
+	}
+	handler.mu.Lock()
+	handler.configInst = config
+	handler.mu.Unlock()
+
+	if config.UpdateLivetime {
+		go watchFile(handler, ctx)
 	}
 	return nil
 }
 
-func ReloadDNSConfig(configPath *string, configInst *ConfigInstance) (*ConfigInstance, error) {
-	var err error
-	configInst, err = getValidatedConfig(configPath, configInst)
+func (handler *ConfigHandler) Reload(ctx context.Context) error {
+
+	newConfig, err := loadConfigFile(handler, ctx)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return configInst, nil
+
+	handler.mu.Lock()
+	handler.configInst = newConfig
+	handler.mu.Unlock()
+
+	return nil
 }
 
-func getValidatedConfig(configPath *string, configInst *ConfigInstance) (*ConfigInstance, error) {
+func (handler *ConfigHandler) Get() *ConfigInstance {
+	handler.mu.RLock()
+	defer handler.mu.RUnlock()
+	return handler.configInst
+}
 
-	if _, err := os.Stat(*configPath); err != nil {
-		fmt.Print("\033[31mCan't find config file!\033[0m")
-		return nil, err
-	}
-
-	data, err := ioutil.ReadFile(*configPath)
+func loadConfigFile(handler *ConfigHandler, ctx context.Context) (*ConfigInstance, error) {
+	data, err := os.ReadFile(handler.configPath)
+	config := ConfigInstance{}
 
 	if err != nil {
-		fmt.Print("\033[31mConfig file is not a correct YAML file!\033[0m")
 		return nil, err
 	}
+	err = yaml.Unmarshal(data, &config)
 
-	if err := configInst.parseConfig(data); err != nil {
-		fmt.Print("\033[31mError occured during parsing YAML config\033[0m")
+	if err != nil {
 		return nil, err
 	}
-
-	return configInst, nil
+	return &config, nil
 }

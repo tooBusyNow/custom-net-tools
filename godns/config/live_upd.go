@@ -3,48 +3,30 @@ package config
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
-
-	"github.com/fsnotify/fsnotify"
+	"time"
 )
 
-func CreateWatcher(configPath *string, configInst *ConfigInstance,
-	updateChan chan bool, doneChan chan bool, ctx context.Context) {
-
-	watcher, err := fsnotify.NewWatcher()
+func watchFile(configLoader *ConfigHandler, ctx context.Context) error {
+	initialStat, err := os.Stat(configLoader.configPath)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
-
-	defer watcher.Close()
-
-	if err != nil {
-		fmt.Print("\033[31mCan't start new Watcher instance\033[0m")
-		os.Exit(0)
-	}
-	watcher.Add(*configPath)
 	for {
 		select {
-
 		case <-ctx.Done():
-			fmt.Print("Shutdown\n")
-			doneChan <- true
-			return
-
-		case event := <-watcher.Events:
-
-			if event.Op&fsnotify.Write == fsnotify.Write {
-				fmt.Print("Config was updated, start reloading\n")
-				updateChan <- true
+			return nil
+		default:
+			stat, err := os.Stat(configLoader.configPath)
+			if err != nil {
+				return err
 			}
-			if !configInst.UpdateLivetime {
-				return
+			if stat.Size() != initialStat.Size() || stat.ModTime() != initialStat.ModTime() {
+				fmt.Print("File was changed\n")
+				initialStat = stat
+				configLoader.Reload(ctx)
 			}
-
-		case err := <-watcher.Errors:
-			log.Println("error:", err)
+			time.Sleep(time.Second / 2)
 		}
-
 	}
 }
