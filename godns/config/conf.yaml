@@ -1,0 +1,7 @@
+host: 127.0.0.4
+port: 53
+nameservers: 
+  - 212.12.15.55
+  - 109.172.10.70
+  - 5.164.23.26
+update-in-livetime: true
