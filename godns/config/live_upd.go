@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func watchFile(configLoader *ConfigHandler, ctx context.Context) error {
+func watchFile(configLoader *ConfigHandler, ctx context.Context, restartChan chan bool) error {
 	initialStat, err := os.Stat(configLoader.configPath)
 	if err != nil {
 		return err
@@ -22,9 +22,9 @@ func watchFile(configLoader *ConfigHandler, ctx context.Context) error {
 				return err
 			}
 			if stat.Size() != initialStat.Size() || stat.ModTime() != initialStat.ModTime() {
-				fmt.Print("File was changed\n")
+				fmt.Print("\033[36mConfig file was changed\n\033[0m")
 				initialStat = stat
-				configLoader.Reload(ctx)
+				configLoader.Reload(ctx, restartChan)
 			}
 			time.Sleep(time.Second / 2)
 		}

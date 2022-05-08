@@ -17,14 +17,15 @@ type ConfigInstance struct {
 }
 
 type ConfigHandler struct {
-	configPath string
-	configInst *ConfigInstance
-	mu         sync.RWMutex
+	configPath  string
+	configInst  *ConfigInstance
+	mu          sync.RWMutex
+	NeedRestart bool
 }
 
-func NewConfigHandler(path string, ctx context.Context) *ConfigHandler {
-	handler := &ConfigHandler{configPath: path}
-	err := handler.Load(ctx)
+func NewConfigHandler(path string, ctx context.Context, restartChan chan bool) *ConfigHandler {
+	handler := &ConfigHandler{configPath: path, NeedRestart: false}
+	err := handler.Load(ctx, restartChan)
 	if err != nil {
 		fmt.Print("\033[31mCan't create config loader due to internal error\033[0m")
 		os.Exit(0)
@@ -32,7 +33,7 @@ func NewConfigHandler(path string, ctx context.Context) *ConfigHandler {
 	return handler
 }
 
-func (handler *ConfigHandler) Load(ctx context.Context) error {
+func (handler *ConfigHandler) Load(ctx context.Context, restartChan chan bool) error {
 	config, err := loadConfigFile(handler, ctx)
 	if err != nil {
 		return err
@@ -42,12 +43,12 @@ func (handler *ConfigHandler) Load(ctx context.Context) error {
 	handler.mu.Unlock()
 
 	if config.UpdateLivetime {
-		go watchFile(handler, ctx)
+		go watchFile(handler, ctx, restartChan)
 	}
 	return nil
 }
 
-func (handler *ConfigHandler) Reload(ctx context.Context) error {
+func (handler *ConfigHandler) Reload(ctx context.Context, restartChan chan bool) error {
 
 	newConfig, err := loadConfigFile(handler, ctx)
 	if err != nil {
@@ -56,6 +57,8 @@ func (handler *ConfigHandler) Reload(ctx context.Context) error {
 
 	handler.mu.Lock()
 	handler.configInst = newConfig
+	handler.NeedRestart = true
+	restartChan <- true
 	handler.mu.Unlock()
 
 	return nil
