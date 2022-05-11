@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"time"
 
 	"gopkg.in/yaml.v2"
 )
 
 type ConfigInstance struct {
-	Nameservers    []string `yaml:"nameservers"`
-	Host           string   `yaml:"host"`
-	Port           int      `yaml:"port"`
-	UpdateLivetime bool     `yaml:"update-in-livetime"`
+	Nameserver      string        `yaml:"nameserver"`
+	Host            string        `yaml:"host"`
+	InternalPort    int           `yaml:"intPort"`
+	ExternalPort    int           `yaml:"extPort"`
+	UpdateLivetime  bool          `yaml:"update-in-livetime"`
+	CacheExpiration time.Duration `yaml:"cache-expiration"`
+	CacheCleanup    time.Duration `yaml:"cache-cleanup"`
 }
 
 type ConfigHandler struct {
@@ -23,9 +27,9 @@ type ConfigHandler struct {
 	NeedRestart bool
 }
 
-func NewConfigHandler(path string, ctx context.Context, restartChan chan bool) *ConfigHandler {
+func NewConfigHandler(path string, ctx context.Context) *ConfigHandler {
 	handler := &ConfigHandler{configPath: path, NeedRestart: false}
-	err := handler.Load(ctx, restartChan)
+	err := handler.Load(ctx)
 	if err != nil {
 		fmt.Print("\033[31mCan't create config loader due to internal error\033[0m")
 		os.Exit(0)
@@ -33,7 +37,7 @@ func NewConfigHandler(path string, ctx context.Context, restartChan chan bool) *
 	return handler
 }
 
-func (handler *ConfigHandler) Load(ctx context.Context, restartChan chan bool) error {
+func (handler *ConfigHandler) Load(ctx context.Context) error {
 	config, err := loadConfigFile(handler, ctx)
 	if err != nil {
 		return err
@@ -43,12 +47,12 @@ func (handler *ConfigHandler) Load(ctx context.Context, restartChan chan bool) e
 	handler.mu.Unlock()
 
 	if config.UpdateLivetime {
-		go watchFile(handler, ctx, restartChan)
+		go watchFile(handler, ctx)
 	}
 	return nil
 }
 
-func (handler *ConfigHandler) Reload(ctx context.Context, restartChan chan bool) error {
+func (handler *ConfigHandler) Reload(ctx context.Context) error {
 
 	newConfig, err := loadConfigFile(handler, ctx)
 	if err != nil {
@@ -58,7 +62,6 @@ func (handler *ConfigHandler) Reload(ctx context.Context, restartChan chan bool)
 	handler.mu.Lock()
 	handler.configInst = newConfig
 	handler.NeedRestart = true
-	restartChan <- true
 	handler.mu.Unlock()
 
 	return nil
