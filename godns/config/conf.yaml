@@ -1,6 +1,6 @@
 host: 127.0.0.1
 intPort: 53
-extPort: 5053
+extPort: 53
 nameserver: 192.5.5.241
 update-in-livetime: true
 cache-expiration: 5

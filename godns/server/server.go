@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	. "godns/cache"
 	. "godns/config"
@@ -47,44 +49,74 @@ func serveRequest(handler *ConfigHandler, mainContext context.Context, conn *net
 			}
 			conn.SetReadDeadline(time.Now().Add(time.Second))
 			_, addr, _ := conn.ReadFromUDP(buffer[:])
+
 			if addr != nil {
 				rawPacket := gopacket.NewPacket(buffer[:], layers.LayerTypeDNS, gopacket.Default)
-				dnsLayerPacket := rawPacket.Layer(layers.LayerTypeDNS)
+				dnsPacket := rawPacket.Layer(layers.LayerTypeDNS).(*layers.DNS)
 
-				if dnsLayerPacket != nil {
-					var dnsPacket = dnsLayerPacket.(*layers.DNS)
-					go serveDNSPacket(handler, dnsPacket, cache)
+				if dnsPacket != nil {
+					go serveDNSPacket(handler, handler.Get().Nameserver, dnsPacket, cache)
 				}
 			}
 		}
 	}
 }
 
-func serveDNSPacket(handler *ConfigHandler, dnsPacket *layers.DNS, cache *Cache) {
+func serveDNSPacket(handler *ConfigHandler, serverIP string, dnsPacket *layers.DNS, cache *Cache) error {
 
 	var config *ConfigInstance = handler.Get()
-	udpExternal, errExt := net.ResolveUDPAddr("udp", config.Nameserver+":"+strconv.Itoa(config.ExternalPort))
+	var someErr error
 
-	if errExt != nil {
-		fmt.Println("\033[31mUnable to parse udp address\033[0m")
-		os.Exit(0)
-	}
-
-	conn, err := net.DialUDP("udp", nil, udpExternal)
+	udpExternal := serverIP + ":" + strconv.Itoa(config.ExternalPort)
+	conn, err := net.Dial("udp", udpExternal)
 	if err != nil {
-		fmt.Printf("\033[31mCan't start listening on port, %d\033[0m", config.ExternalPort)
+		fmt.Println("\033[31mUnable to establish connection to External DNS server\033[0m", udpExternal)
 		os.Exit(0)
 	}
-	defer conn.Close()
 
-	if !dnsPacket.QR {
-		for _, quest := range dnsPacket.Questions {
-			if quest.Type.String() == "A" {
-				conn.WriteToUDP(dnsPacket.Contents, udpExternal)
-				fmt.Print("Writed")
+	fmt.Println(serverIP)
 
-				fmt.Println(len(dnsPacket.Contents))
+	for _, quest := range dnsPacket.Questions {
+		if quest.Type.String() == "A" {
+			p := make([]byte, 2048)
+			fmt.Fprintf(conn, string(dnsPacket.Contents))
+
+			conn.SetReadDeadline(time.Now().Add(time.Second * 3))
+			_, err = bufio.NewReader(conn).Read(p)
+
+			if err != nil {
+				return errors.New("Timeout")
 			}
+			conn.Close()
+
+			rawPacket := gopacket.NewPacket(p[:], layers.LayerTypeDNS, gopacket.Default)
+			dnsResponse := rawPacket.Layer(layers.LayerTypeDNS).(*layers.DNS)
+
+			fmt.Println(dnsResponse.ResponseCode)
+
+			if len(dnsResponse.Answers) > 0 {
+				fmt.Println("Finished")
+				fmt.Println(dnsResponse.Answers[0].IP)
+				return nil
+			} else if dnsResponse.ResponseCode.String() == "Format Error" {
+				return errors.New("FE")
+			} else {
+				for _, nsIP := range dnsResponse.Additionals {
+					fmt.Println("Got nameserver: ", nsIP.IP.String())
+
+					if nsIP.IP.To4() == nil {
+						continue
+					}
+
+					someErr = serveDNSPacket(handler, nsIP.IP.String(), dnsPacket, cache)
+					fmt.Println(someErr)
+					if someErr == nil {
+						break
+					}
+				}
+			}
+
 		}
 	}
+	return someErr
 }
