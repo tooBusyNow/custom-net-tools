@@ -70,7 +70,8 @@ func (ch *Cache) GetItem(key string) (interface{}, bool) {
 func (ch *Cache) DeleteItem(key string) {
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
-	if _, found := ch.items[key]; found {
+	_, found := ch.items[key]
+	if found {
 		delete(ch.items, key)
 	}
 }
