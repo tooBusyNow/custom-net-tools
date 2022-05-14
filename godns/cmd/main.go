@@ -35,6 +35,7 @@ func main() {
 
 		default:
 			if configHandler.NeedRestart {
+				time.Sleep(time.Second * 2)
 				fmt.Print("\033[36mServer is now using updated config\n\033[0m")
 				configHandler.NeedRestart = false
 				go StartServer(configHandler, mainContext, cache)
