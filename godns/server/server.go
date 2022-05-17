@@ -9,7 +9,6 @@ import (
 	. "godns/config"
 	"net"
 	"os"
-	"strconv"
 	"time"
 
 	"github.com/google/gopacket"
@@ -52,11 +51,14 @@ func serveRequest(handler *ConfigHandler, mainContext context.Context, intConn *
 			n, addr, _ := intConn.ReadFromUDP(buffer[:])
 
 			if addr != nil {
-				rawPacket := gopacket.NewPacket(buffer[:n], layers.LayerTypeDNS, gopacket.Default)
-				dnsPacket := rawPacket.Layer(layers.LayerTypeDNS).(*layers.DNS)
+				newPacket := gopacket.NewPacket(buffer[:n], layers.LayerTypeDNS, gopacket.Default)
+				rawPacket := newPacket.Layer(layers.LayerTypeDNS)
 
-				if dnsPacket != nil {
-					go serveDNSPacket(handler, handler.Get().Nameserver, dnsPacket, cache, intConn, addr)
+				if rawPacket != nil {
+					dnsPacket := rawPacket.(*layers.DNS)
+					if dnsPacket != nil {
+						go serveDNSPacket(handler, handler.Get().Nameserver, dnsPacket, cache, intConn, addr)
+					}
 				}
 			}
 		}
@@ -68,15 +70,19 @@ func serveDNSPacket(handler *ConfigHandler, serverIP string,
 
 	var someErr error
 
-	udpExternal := serverIP + ":" + strconv.Itoa(53)
-	extConn, err := net.Dial("udp", udpExternal)
+	udpExternal := &net.UDPAddr{
+		Port: 53,
+		IP:   net.ParseIP(serverIP).To16(),
+	}
+	extConn, err := net.Dial("udp", udpExternal.String())
 	if err != nil {
 		fmt.Println("\033[31mUnable to establish connection to External DNS server\033[0m", udpExternal)
+		fmt.Println(err)
 		os.Exit(0)
 	}
 
 	for _, quest := range dnsPacket.Questions {
-		if quest.Type.String() == "A" {
+		if quest.Type.String() == "A" || quest.Type.String() == "AAAA" {
 
 			p := make([]byte, 2048)
 			fmt.Fprintf(extConn, string(dnsPacket.Contents))
@@ -86,29 +92,33 @@ func serveDNSPacket(handler *ConfigHandler, serverIP string,
 			if err != nil {
 				return errors.New("Timeout")
 			}
+
 			extConn.Close()
 			rawPacket := gopacket.NewPacket(p[:n], layers.LayerTypeDNS, gopacket.Default)
 			dnsResponse := rawPacket.Layer(layers.LayerTypeDNS).(*layers.DNS)
 
 			if len(dnsResponse.Answers) > 0 {
-
-				fmt.Println("Finished")
-				fmt.Println(dnsResponse.Answers[0].IP)
-
+				fmt.Println("Got A type RR's: ", dnsResponse.Answers[0].IP)
 				intConn.WriteTo(dnsResponse.Contents, addr)
-
-				fmt.Println("Sent")
-
 				return nil
 
 			} else {
-				for _, nsIP := range dnsResponse.Additionals {
-					if nsIP.IP.To4() == nil {
-						continue
+				if len(dnsResponse.Additionals) > 0 {
+					for _, nsIP := range dnsResponse.Additionals {
+						if nsIP.IP.To16() == nil {
+							continue
+						}
+						someErr = serveDNSPacket(handler, nsIP.IP.String(), dnsPacket, cache, intConn, addr)
+						if someErr == nil {
+							break
+						}
 					}
-					someErr = serveDNSPacket(handler, nsIP.IP.String(), dnsPacket, cache, intConn, addr)
-					if someErr == nil {
-						break
+				} else if len(dnsResponse.Authorities) > 0 {
+					for _, srv := range dnsResponse.Authorities {
+						someErr = serveDNSPacket(handler, string(srv.NS), dnsPacket, cache, intConn, addr)
+						if someErr == nil {
+							break
+						}
 					}
 				}
 			}

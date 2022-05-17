@@ -2,4 +2,4 @@ host: 127.0.0.1
 nameserver: 192.5.5.241
 update-in-livetime: true
 cache-expiration: 10
-cache-cleanup: 10
+cache-cleanup: 6
