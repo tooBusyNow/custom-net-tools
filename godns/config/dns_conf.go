@@ -13,8 +13,6 @@ import (
 type ConfigInstance struct {
 	Nameserver      string        `yaml:"nameserver"`
 	Host            string        `yaml:"host"`
-	InternalPort    int           `yaml:"intPort"`
-	ExternalPort    int           `yaml:"extPort"`
 	UpdateLivetime  bool          `yaml:"update-in-livetime"`
 	CacheExpiration time.Duration `yaml:"cache-expiration"`
 	CacheCleanup    time.Duration `yaml:"cache-cleanup"`
