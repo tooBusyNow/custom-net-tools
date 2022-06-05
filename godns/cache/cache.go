@@ -4,6 +4,9 @@ import (
 	"sync"
 	"time"
 
+	"crypto/sha1"
+	"encoding/base64"
+
 	"github.com/google/gopacket/layers"
 )
 
@@ -20,8 +23,10 @@ type CacheItem struct {
 	Expiration int64
 }
 
-func (ch *Cache) Add(key string, rr layers.DNSResourceRecord, expTime time.Duration) {
+func (ch *Cache) Add(key []byte, rr layers.DNSResourceRecord, expTime time.Duration) {
 	var expiration int64
+
+	hashedKey := hashFromBytes(key)
 
 	if expTime == 0 {
 		expTime = ch.cacheLivetime
@@ -32,7 +37,7 @@ func (ch *Cache) Add(key string, rr layers.DNSResourceRecord, expTime time.Durat
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
 
-	ch.items[key] = CacheItem{
+	ch.items[hashedKey] = CacheItem{
 		RR:         rr,
 		Expiration: expiration,
 		Created:    time.Now(),
@@ -53,11 +58,13 @@ func NewCache(defaultExpiration, cleanupInterval time.Duration) *Cache {
 	return &cache
 }
 
-func (ch *Cache) GetItem(key string) (layers.DNSResourceRecord, bool) {
+func (ch *Cache) GetItem(key []byte) (layers.DNSResourceRecord, bool) {
 	ch.mu.RLock()
 	defer ch.mu.RLock()
 
-	item, found := ch.items[key]
+	hashedKey := hashFromBytes(key)
+
+	item, found := ch.items[hashedKey]
 	if !found {
 		return layers.DNSResourceRecord{}, false
 	}
@@ -69,12 +76,15 @@ func (ch *Cache) GetItem(key string) (layers.DNSResourceRecord, bool) {
 	return item.RR, true
 }
 
-func (ch *Cache) DeleteItem(key string) {
+func (ch *Cache) DeleteItem(key []byte) {
+
+	hashedKey := hashFromBytes(key)
+
 	ch.mu.Lock()
 	defer ch.mu.Unlock()
-	_, found := ch.items[key]
+	_, found := ch.items[hashedKey]
 	if found {
-		delete(ch.items, key)
+		delete(ch.items, hashedKey)
 	}
 }
 
@@ -111,4 +121,11 @@ func (ch *Cache) removeExpiredKeys(expKeys []string) {
 	for _, k := range expKeys {
 		delete(ch.items, k)
 	}
+}
+
+func hashFromBytes(bytes []byte) string {
+	hasher := sha1.New()
+	hasher.Write(bytes)
+	sha := base64.URLEncoding.EncodeToString(hasher.Sum(nil))
+	return sha
 }

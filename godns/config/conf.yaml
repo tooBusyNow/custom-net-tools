@@ -1,5 +1,5 @@
 host: 127.0.0.1
-nameserver: 192.5.5.241
+nameserver: 193.0.14.129 ##  Use only Root nameservers
 update-in-livetime: true
 cache-expiration: 10
 cache-cleanup: 6
