@@ -3,6 +3,8 @@ package cache
 import (
 	"sync"
 	"time"
+
+	"github.com/google/gopacket/layers"
 )
 
 type Cache struct {
@@ -13,12 +15,12 @@ type Cache struct {
 }
 
 type CacheItem struct {
-	Value      interface{}
+	RR         layers.DNSResourceRecord
 	Created    time.Time
 	Expiration int64
 }
 
-func (ch *Cache) Add(key string, value interface{}, expTime time.Duration) {
+func (ch *Cache) Add(key string, rr layers.DNSResourceRecord, expTime time.Duration) {
 	var expiration int64
 
 	if expTime == 0 {
@@ -31,7 +33,7 @@ func (ch *Cache) Add(key string, value interface{}, expTime time.Duration) {
 	defer ch.mu.Unlock()
 
 	ch.items[key] = CacheItem{
-		Value:      value,
+		RR:         rr,
 		Expiration: expiration,
 		Created:    time.Now(),
 	}
@@ -51,20 +53,20 @@ func NewCache(defaultExpiration, cleanupInterval time.Duration) *Cache {
 	return &cache
 }
 
-func (ch *Cache) GetItem(key string) (interface{}, bool) {
+func (ch *Cache) GetItem(key string) (layers.DNSResourceRecord, bool) {
 	ch.mu.RLock()
 	defer ch.mu.RLock()
 
 	item, found := ch.items[key]
 	if !found {
-		return nil, false
+		return layers.DNSResourceRecord{}, false
 	}
 	if item.Expiration > 0 {
 		if time.Now().UnixNano() > item.Expiration {
-			return nil, false
+			return layers.DNSResourceRecord{}, false
 		}
 	}
-	return item.Value, true
+	return item.RR, true
 }
 
 func (ch *Cache) DeleteItem(key string) {

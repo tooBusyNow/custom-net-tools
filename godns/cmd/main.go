@@ -29,7 +29,7 @@ func main() {
 	for {
 		select {
 		case <-mainContext.Done():
-			time.Sleep(time.Second * 2)
+			time.Sleep(time.Second / 2)
 			fmt.Print("\033[32mDNS Server was stopped\n\033[0m")
 			return
 

@@ -15,6 +15,8 @@ import (
 	"github.com/google/gopacket/layers"
 )
 
+var rootIP string
+
 func StartServer(handler *ConfigHandler, mainContext context.Context, cache *Cache) {
 	var config *ConfigInstance = handler.Get()
 
@@ -30,6 +32,7 @@ func StartServer(handler *ConfigHandler, mainContext context.Context, cache *Cac
 		os.Exit(0)
 	}
 
+	rootIP = handler.Get().Nameserver
 	fmt.Print("\033[32mDNS Server is up and running\n\033[0m")
 	go serveRequest(handler, mainContext, conn, cache)
 }
@@ -48,16 +51,17 @@ func serveRequest(handler *ConfigHandler, mainContext context.Context, intConn *
 				return
 			}
 			intConn.SetReadDeadline(time.Now().Add(time.Second * 1))
-			n, addr, _ := intConn.ReadFromUDP(buffer[:])
+			n, intAddr, _ := intConn.ReadFromUDP(buffer[:])
+			data := buffer[:]
 
-			if addr != nil {
+			if intAddr != nil {
 				newPacket := gopacket.NewPacket(buffer[:n], layers.LayerTypeDNS, gopacket.Default)
 				rawPacket := newPacket.Layer(layers.LayerTypeDNS)
 
 				if rawPacket != nil {
-					dnsPacket := rawPacket.(*layers.DNS)
-					if dnsPacket != nil {
-						go serveDNSPacket(handler, handler.Get().Nameserver, dnsPacket, cache, intConn, addr)
+					dnsInternalReq := rawPacket.(*layers.DNS)
+					if dnsInternalReq != nil {
+						go serveDNSPacket(handler, rootIP, *dnsInternalReq, cache, intConn, intAddr, data)
 					}
 				}
 			}
@@ -65,64 +69,189 @@ func serveRequest(handler *ConfigHandler, mainContext context.Context, intConn *
 	}
 }
 
-func serveDNSPacket(handler *ConfigHandler, serverIP string,
-	dnsPacket *layers.DNS, cache *Cache, intConn *net.UDPConn, addr *net.UDPAddr) error {
+func serveDNSPacket(handler *ConfigHandler, dstServerIP string, dnsIntReq layers.DNS,
+	cache *Cache, intConn *net.UDPConn, intAddr *net.UDPAddr, data []byte) {
 
-	var someErr error
+	var bytes []byte
+	var AAFlag bool
+	var NoResFlag bool
+	var dnsResponse layers.DNS
+	var initialReq layers.DNS = dnsIntReq
+	var depth int = 0
 
-	udpExternal := &net.UDPAddr{
-		Port: 53,
-		IP:   net.ParseIP(serverIP).To16(),
+	for {
+
+		if depth > 8 {
+			return
+		}
+		bytes, AAFlag, dnsResponse, NoResFlag = sendDNSRequest(dstServerIP, dnsIntReq, AAFlag, NoResFlag)
+
+		if dnsResponse.ResponseCode.String() == "Server Failure " {
+			dstServerIP = handler.Get().Nameserver
+			NoResFlag = true
+			continue
+		}
+
+		if AAFlag {
+			if string(dnsIntReq.Questions[0].Name) == string(initialReq.Questions[0].Name) {
+				intConn.WriteTo(getSerializedDNSPacket(dnsResponse), intAddr)
+				return
+			} else {
+				newReq := getATypeReqForName(dnsIntReq, string(initialReq.Questions[0].Name))
+				dnsIntReq = newReq
+			}
+		}
+
+		rawAddr := net.ParseIP(string(bytes))
+		if rawAddr != nil {
+			dstServerIP = rawAddr.String()
+		} else {
+			newReq := getATypeReqForName(dnsIntReq, string(bytes))
+			dnsIntReq = newReq
+			dstServerIP = handler.Get().Nameserver
+		}
+
+		depth += 1
 	}
-	extConn, err := net.Dial("udp", udpExternal.String())
-	if err != nil {
-		fmt.Println("\033[31mUnable to establish connection to External DNS server\033[0m", udpExternal)
-		fmt.Println(err)
-		os.Exit(0)
-	}
+}
 
-	for _, quest := range dnsPacket.Questions {
-		if quest.Type.String() == "A" || quest.Type.String() == "AAAA" {
+func sendDNSRequest(dstServerIP string, dnsIntReq layers.DNS, AAFlag bool, NoResFlag bool) ([]byte, bool, layers.DNS, bool) {
 
-			p := make([]byte, 2048)
-			fmt.Fprintf(extConn, string(dnsPacket.Contents))
-			extConn.SetReadDeadline(time.Now().Add(time.Second * 3))
-			n, err := bufio.NewReader(extConn).Read(p)
+	for _, quest := range dnsIntReq.Questions {
 
-			if err != nil {
-				return errors.New("Timeout")
+		switch quest.Type {
+		case layers.DNSTypeA:
+			dnsResponse := resendToExternalWait4Response(dstServerIP, dnsIntReq)
+			if dnsResponse.AA {
+				AAFlag = true
 			}
 
-			extConn.Close()
-			rawPacket := gopacket.NewPacket(p[:n], layers.LayerTypeDNS, gopacket.Default)
-			dnsResponse := rawPacket.Layer(layers.LayerTypeDNS).(*layers.DNS)
+			if dnsResponse.ResponseCode == 2 && !NoResFlag {
+				return dnsIntReq.Contents, AAFlag, dnsResponse, NoResFlag
+			}
 
-			if len(dnsResponse.Answers) > 0 {
-				fmt.Println("Got A type RR's: ", dnsResponse.Answers[0].IP)
-				intConn.WriteTo(dnsResponse.Contents, addr)
-				return nil
-
-			} else {
-				if len(dnsResponse.Additionals) > 0 {
-					for _, nsIP := range dnsResponse.Additionals {
-						if nsIP.IP.To16() == nil {
-							continue
-						}
-						someErr = serveDNSPacket(handler, nsIP.IP.String(), dnsPacket, cache, intConn, addr)
-						if someErr == nil {
-							break
-						}
+			if len(dnsResponse.Additionals) > 0 {
+				for _, addRecord := range dnsResponse.Additionals {
+					if addRecord.IP.To4() == nil {
+						continue
 					}
-				} else if len(dnsResponse.Authorities) > 0 {
-					for _, srv := range dnsResponse.Authorities {
-						someErr = serveDNSPacket(handler, string(srv.NS), dnsPacket, cache, intConn, addr)
-						if someErr == nil {
-							break
-						}
+					if NoResFlag {
+						NoResFlag = false
+						continue
 					}
+					NoResFlag = false
+					dstServerIP = addRecord.IP.String()
+					return []byte(dstServerIP), AAFlag, dnsResponse, NoResFlag
 				}
+
+			} else if len(dnsResponse.Authorities) > 0 {
+				return dnsResponse.Authorities[0].NS, AAFlag, dnsResponse, NoResFlag
+
+			} else if len(dnsResponse.Answers) > 0 {
+				return []byte(dnsResponse.Answers[0].IP.String()), AAFlag, dnsResponse, NoResFlag
+			}
+
+		case layers.DNSTypePTR:
+			if string(quest.Name) == "1.0.0.127.in-addr.arpa" {
+				replyMess := getPTRecord4LocalResolver(dnsIntReq)
+				bytes := getSerializedDNSPacket(replyMess)
+				return bytes, AAFlag, replyMess, NoResFlag
 			}
 		}
 	}
-	return someErr
+	return []byte(""), AAFlag, layers.DNS{}, NoResFlag
+}
+
+func getPTRecord4LocalResolver(dnsIntReq layers.DNS) layers.DNS {
+	var dnsAnswer layers.DNSResourceRecord = layers.DNSResourceRecord{
+		Type:  layers.DNSTypePTR,
+		Class: layers.DNSClassIN,
+
+		Name: []byte(dnsIntReq.Questions[0].Name),
+		PTR:  []byte("GoDNSResolver"),
+		TTL:  90,
+	}
+
+	var replyMess layers.DNS = layers.DNS{
+		ID: dnsIntReq.ID,
+
+		QR: true,
+		RD: true,
+		AA: false,
+		TC: false,
+
+		QDCount: 1,
+		ANCount: 1,
+
+		OpCode:    layers.DNSOpCodeQuery,
+		Questions: dnsIntReq.Questions,
+		Answers:   append(dnsIntReq.Answers, dnsAnswer),
+	}
+
+	return replyMess
+}
+
+func getATypeReqForName(dnsIntReq layers.DNS, newName string) layers.DNS {
+
+	newDNSReq := dnsIntReq
+
+	var dnsQuest layers.DNSQuestion
+	dnsQuest.Class = layers.DNSClassIN
+	dnsQuest.Type = layers.DNSTypeA
+	dnsQuest.Name = []byte(newName)
+
+	newDNSReq.Questions = []layers.DNSQuestion{dnsQuest}
+
+	test := getSerializedDNSPacket(newDNSReq)
+	decoded := gopacket.NewPacket([]byte(test), layers.LayerTypeDNS, gopacket.Default)
+	test2 := decoded.Layer(layers.LayerTypeDNS).(*layers.DNS)
+
+	test3 := *test2
+
+	return test3
+}
+
+func getSerializedDNSPacket(replyMess layers.DNS) []byte {
+	buf := gopacket.NewSerializeBuffer()
+	opts := gopacket.SerializeOptions{}
+	err := replyMess.SerializeTo(buf, opts)
+
+	if err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}
+
+func openExternalConn(dstServerIP string) *net.UDPConn {
+	udpExternal := &net.UDPAddr{
+		Port: 53,
+		IP:   net.ParseIP(dstServerIP),
+	}
+	extConn, err := net.DialUDP("udp", nil, udpExternal)
+	if err != nil {
+		fmt.Println("\033[31mUnable to establish connection to External DNS server\033[0m", udpExternal)
+		os.Exit(0)
+	}
+	return extConn
+}
+
+func resendToExternalWait4Response(dstServerIP string, dnsIntReq layers.DNS) layers.DNS {
+
+	extConn := openExternalConn(dstServerIP)
+	defer extConn.Close()
+
+	p := make([]byte, 2048)
+	extConn.Write(dnsIntReq.Contents)
+
+	extConn.SetReadDeadline(time.Now().Add(time.Second / 2))
+	n, err := bufio.NewReader(extConn).Read(p)
+
+	if err != nil {
+		fmt.Println(errors.New("Timeout"))
+	}
+
+	rawPacket := gopacket.NewPacket(p[:n], layers.LayerTypeDNS, gopacket.Default)
+	dnsResponse := rawPacket.Layer(layers.LayerTypeDNS).(*layers.DNS)
+
+	return *dnsResponse
 }
